@@ -402,6 +402,16 @@ void fsm()
 		case S_OPEN_STEADY:
 		{
 
+			// Slow down a little bit when we
+			if(time == 100)
+				pwm_requests[1] -= 5;
+
+			if(time == 120)
+				pwm_requests[1] -= 5;
+
+			if(time == 130)
+				pwm_requests[1] -= 5;
+
 			if(SENSOR_ALMOST_OPEN())
 				cur_state = S_OPEN_RAMPDOWN;
 
@@ -473,7 +483,7 @@ void fsm()
 				pwm_requests[1] = MAX_SPEED;
 
 			if(time > 50)
-				cur_state = S_OPEN_STEADY;
+				cur_state = S_CLOSE_STEADY;
 
 			if(time > 40 && (SENSOR_FULLY_OPEN() || SENSOR_ALMOST_OPEN()))
 			{
@@ -567,7 +577,6 @@ void fsm()
 		{
 			MOT_2_DISABLE();
 
-/*
 			if(open_pending && time > 5)
 			{
 				open_pending = 0;
@@ -580,7 +589,6 @@ void fsm()
 				cur_state = S_CLOSE_START;
 			}
 
-*/
 		}
 		break;
 
@@ -760,7 +768,7 @@ int main()
 		print_string(" alive_time=");
 		utoa(alive_time, buf, 10);
 		print_string(buf);
-		if(alive_time > 9) print_char(' ');
+		if(alive_time < 10) print_char(' ');
 		if(++alive_time >= 100) alive_time = 0;
 
 		print_string(" state=");
