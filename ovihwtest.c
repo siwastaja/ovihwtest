@@ -278,7 +278,7 @@ const state_params_t states[NUM_STATES] =
 #define SENSOR_FULLY_OPEN() (!(PINC&4))
 #define SENSOR_ALMOST_CLOSED() (!(PINC&4))
 #define SENSOR_FULLY_CLOSED() (!(PINC&4))
-#define SENSOR_HUMAN_IN_MIDDLE() (0)
+#define SENSOR_MAN_IN_MIDDLE() (0)
 
 uint8_t errcode;
 
@@ -323,6 +323,9 @@ void close()
 		cur_state == S_CLOSE_RAMPDOWN ||
 		cur_state == S_CLOSE_PUSH ||
 		cur_state == S_CLOSED)
+		return;
+
+	if(SENSOR_MAN_IN_MIDDLE())
 		return;
 
 	if(	cur_state == S_OPEN_START ||
@@ -456,7 +459,7 @@ void fsm()
 			if(SENSOR_FULLY_CLOSED())
 				error(5);
 
-			if(SENSOR_HUMAN_IN_MIDDLE())
+			if(SENSOR_MAN_IN_MIDDLE())
 				cur_state = S_STOP_RAMPDOWN;
 
 		break;
@@ -469,7 +472,7 @@ void fsm()
 			if(SENSOR_FULLY_CLOSED())
 				error(6);
 
-			if(SENSOR_HUMAN_IN_MIDDLE())
+			if(SENSOR_MAN_IN_MIDDLE())
 				cur_state = S_STOP_RAMPDOWN;
 		break;
 
@@ -484,7 +487,7 @@ void fsm()
 			if(SENSOR_FULLY_CLOSED())
 				error(7);
 
-			if(SENSOR_HUMAN_IN_MIDDLE())
+			if(SENSOR_MAN_IN_MIDDLE())
 				cur_state = S_STOP_RAMPDOWN;
 
 		break;
@@ -726,6 +729,8 @@ int main()
 			print_string(" ALMOST_OPEN");
 		if(SENSOR_FULLY_OPEN())
 			print_string(" FULLY_OPEN");
+		if(SENSOR_MAN_IN_MIDDLE())
+			print_string(" MAN_IN_MIDDLE");
 */
 
 		if(states[cur_state].safety_max_duration && time > states[cur_state].safety_max_duration)
