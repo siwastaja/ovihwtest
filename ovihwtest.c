@@ -88,13 +88,11 @@ ISR(ADC_vect)
 	START_ADC_CONV();
 }
 
-volatile uint8_t run;
-
 #define CMD_NOP 0
 #define CMD_OPEN 1
 #define CMD_CLOSE 2
 #define CMD_STOP 3
-volatile uint8_t cmd;
+volatile int8_t cmd;
 
 ISR(USART1_RX_vect)
 {
@@ -133,8 +131,8 @@ ISR(INT6_vect) // Motor 2 overcurrent
 	cbi(EIMSK, 6);
 }
 
-volatile uint16_t isr_timer;
-volatile uint8_t sig_100ms;
+volatile int16_t isr_timer;
+volatile int8_t sig_100ms;
 
 ISR(TIMER0_OVF_vect)
 {
@@ -219,7 +217,7 @@ void set_motor_curr_limit(uint8_t limit)
 	CUR_LIMIT_PWM_2 = limit;
 }
 
-uint8_t cur_state;
+int8_t cur_state;
 
 #define S_UNKNOWN 0
 
@@ -248,44 +246,49 @@ uint8_t cur_state;
 typedef struct
 {
 	char name[10];
-	uint16_t safety_max_duration; // if exceded, error message is generated and door goes to fault state.  0 = off (no checking)
+	int16_t safety_max_duration; // if exceded, error message is generated and door goes to fault state.  0 = off (no checking)
 } state_params_t;
 
-uint16_t time;
+int16_t time;
 
 const state_params_t states[NUM_STATES] =
 {
- /*0*/	{"UNKNOWN",   0},
-	{"OP_START",  2},
-	{"OP_ACCEL",  30},
+ /*0*/	{"UNKNOWN  ", 0},
+	{"OP_START ", 2},
+	{"OP_ACCEL ", 50},
 	{"OP_STEADY", 300},
-	{"OP_DECEL",  30},
-	{"OP_PUSH",   30},
- /*6*/	{"OPENED",    5000},
-	{"CL_START",  2},
-	{"CL_ACCEL",  25},
+	{"OP_DECEL ", 50},
+	{"OP_PUSH  ", 30},
+ /*6*/	{"OPENED   ", 5000},
+	{"CL_START ", 2},
+	{"CL_ACCEL ", 100},
 	{"CL_STEADY", 300},
-	{"CL_DECEL",  21},
-	{"CL_PUSH",   16},
- /*12*/	{"CLOSED",    0},
-	{"ST_DECEL",  10},
-	{"STOPPED",   10000},
-	{"FA_DECEL",  5},
-	{"FAULTED",   0}
+	{"CL_DECEL ", 50},
+	{"CL_PUSH  ", 16},
+ /*12*/	{"CLOSED   ", 0},
+	{"ST_DECEL ", 10},
+	{"STOPPED  ", 10000},
+	{"FA_DECEL ", 5},
+	{"FAULTED  ", 0}
 };
 
-#define SENSOR_ALMOST_OPEN() (!(PINC&4))
-#define SENSOR_FULLY_OPEN() (!(PINC&4))
-#define SENSOR_ALMOST_CLOSED() (!(PINC&4))
-#define SENSOR_FULLY_CLOSED() (!(PINC&4))
-#define SENSOR_MAN_IN_MIDDLE() (0)
+#define SENSOR_ALMOST_OPEN()   (!(PINC&(1<<2)))
+#define SENSOR_FULLY_OPEN()    (!(PING&(1<<2)))
+#define SENSOR_ALMOST_CLOSED() (!(PINC&(1<<1)))
+#define SENSOR_FULLY_CLOSED()  (!(PINC&(1<<6)))
+#define SENSOR_MAN_IN_MIDDLE() (!(PINA&(1<<5)))
+//#define SENSOR_MAN_OUT_MIDDLE() (!(PINA&(1<<5)))
+#define BUT_OPEN()  (!(PINA&(1<<2)))
+#define BUT_CLOSE() (!(PINA&(1<<1)))
+#define BUT_STOP()  ((PINA&(1<<0)))
 
-uint8_t errcode;
 
-uint8_t open_pending;
-uint8_t close_pending;
+int8_t errcode;
 
-void error(uint8_t code)
+int8_t open_pending;
+int8_t close_pending;
+
+void error(int8_t code)
 {
 	errcode = code;
 	cur_state = S_FAULT_RAMPDOWN;
@@ -344,6 +347,8 @@ void close()
 
 void stop()
 {
+	if(cur_state == S_STOP_RAMPDOWN || cur_state == S_STOPPED)
+		return;
 	cur_state = S_STOP_RAMPDOWN;
 }
 
@@ -351,7 +356,16 @@ void fsm()
 {
 	switch(cur_state)
 	{
+		case S_UNKNOWN:
+		{
+
+			MOT_2_DISABLE();
+		}
+
+		break;
+
 		case S_OPEN_START:
+		{
 
 			MOT_2_DISABLE();
 			_delay_ms(20); // Make sure current has decayed before switching the relay
@@ -362,10 +376,12 @@ void fsm()
 			MOT_2_ENABLE();
 
 			cur_state = S_OPEN_RAMPUP;
+		}
 
 		break;
 
 		case S_OPEN_RAMPUP:
+		{
 
 			pwm_requests[1] += 4;
 			if(pwm_requests[1] > MAX_SPEED)
@@ -380,9 +396,11 @@ void fsm()
 			if(SENSOR_FULLY_OPEN())
 				error(1);
 
+		}
 		break;
 
 		case S_OPEN_STEADY:
+		{
 
 			if(SENSOR_ALMOST_OPEN())
 				cur_state = S_OPEN_RAMPDOWN;
@@ -390,22 +408,26 @@ void fsm()
 			if(SENSOR_FULLY_OPEN())
 				error(2);
 
+		}
 		break;
 
 		case S_OPEN_RAMPDOWN:
+		{
 
 			if(pwm_requests[1] > 50)
-				pwm_requests[1] -= 4;
+				pwm_requests[1] -= 8;
 
 			if(time > 12)
 				cur_state = S_OPEN_PUSH;
 
 			if(SENSOR_FULLY_OPEN())
-				error(3);
+				cur_state = S_OPEN_PUSH;
 
+		}
 		break;
 
 		case S_OPEN_PUSH:
+		{
 
 			CUR_LIMIT_PWM_2 = 70;
 
@@ -413,18 +435,22 @@ void fsm()
 				cur_state = S_OPENED;
 
 
+		}
 		break;
 
 		case S_OPENED:
+		{
 
 			MOT_2_DISABLE();
 
 			if(!SENSOR_FULLY_OPEN())
 				error(10);
+		}
 
 		break;
 
 		case S_CLOSE_START:
+		{
 
 			MOT_2_DISABLE();
 			_delay_ms(20); // Make sure current has decayed before switching the relay
@@ -436,9 +462,11 @@ void fsm()
 
 			cur_state = S_CLOSE_RAMPUP;
 
+		}
 		break;
 
 		case S_CLOSE_RAMPUP:
+		{
 
 			pwm_requests[1] += 2;
 			if(pwm_requests[1] > MAX_SPEED)
@@ -462,9 +490,11 @@ void fsm()
 			if(SENSOR_MAN_IN_MIDDLE())
 				cur_state = S_STOP_RAMPDOWN;
 
+		}
 		break;
 
 		case S_CLOSE_STEADY:
+		{
 
 			if(SENSOR_ALMOST_CLOSED())
 				cur_state = S_CLOSE_RAMPDOWN;
@@ -474,9 +504,11 @@ void fsm()
 
 			if(SENSOR_MAN_IN_MIDDLE())
 				cur_state = S_STOP_RAMPDOWN;
+		}
 		break;
 
 		case S_CLOSE_RAMPDOWN:
+		{
 
 			if(pwm_requests[1] > 50)
 				pwm_requests[1] -= 4;
@@ -485,23 +517,27 @@ void fsm()
 				cur_state = S_CLOSE_PUSH;
 
 			if(SENSOR_FULLY_CLOSED())
-				error(7);
+				cur_state = S_CLOSE_PUSH;
 
 			if(SENSOR_MAN_IN_MIDDLE())
 				cur_state = S_STOP_RAMPDOWN;
 
+		}
 		break;
 
 		case S_CLOSE_PUSH:
+		{
 
 			CUR_LIMIT_PWM_2 = 70;
 
 			if(SENSOR_FULLY_CLOSED())
 				cur_state = S_CLOSED;
 
+		}
 		break;
 
 		case S_CLOSED:
+		{
 
 			MOT_2_DISABLE();
 
@@ -509,9 +545,12 @@ void fsm()
 				error(10);
 
 
+		}
 		break;
 
 		case S_STOP_RAMPDOWN:
+		{
+			CUR_LIMIT_PWM_2 = 70;  // LOWER CURRENT LIMIT
 
 			if(pwm_requests[1] > 20)
 				pwm_requests[1] -= 10;
@@ -521,12 +560,14 @@ void fsm()
 			if(time > 8)
 				cur_state = S_STOPPED;
 
+		}
 		break;
 
 		case S_STOPPED:
-
+		{
 			MOT_2_DISABLE();
 
+/*
 			if(open_pending && time > 5)
 			{
 				open_pending = 0;
@@ -539,9 +580,12 @@ void fsm()
 				cur_state = S_CLOSE_START;
 			}
 
+*/
+		}
 		break;
 
 		case S_FAULT_RAMPDOWN:
+		{
 
 			if(pwm_requests[1] > 25)
 				pwm_requests[1] -= 20;
@@ -550,17 +594,22 @@ void fsm()
 
 			if(time > 8)
 				cur_state = S_FAULT_STOPPED;
+		}
 
 		break;
 
 		case S_FAULT_STOPPED:
+		{
 
 			MOT_2_DISABLE();
+		}
 
 		break;
 
 		default:
+		{
 			error(8);
+		}
 		break;
 	}
 }
@@ -649,41 +698,72 @@ int main()
 
 	MOT_2_DIR_A();
 
-	uint8_t alive_time = 0;
+	int8_t alive_time = 0;
 
 	while(1)
 	{
+		char buf[10];
+
 		cli();
 		isr_timer = 0;
 		sig_100ms = 0;
 		sei();
 
-		uint8_t prev_state = cur_state;
+		int8_t prev_state = cur_state;
 
-		uint8_t command = cmd;
+		int8_t command = cmd;
 		if(command == CMD_OPEN)
-			open();
-		else if(command == CMD_CLOSE)
-			close();
-		else if(command == CMD_STOP)
-			stop();
-		else // no command, todo: check the buttons for manual operation
 		{
-
+			open();
+			cmd = CMD_NOP;
+		}
+		else if(command == CMD_CLOSE)
+		{
+			close();
+			cmd = CMD_NOP;
+		}
+		else if(command == CMD_STOP)
+		{
+			stop();
+			cmd = CMD_NOP;
+		}
+		else // no command, check the buttons for manual operation
+		{
+			if(BUT_STOP())
+				stop();
+			else if(BUT_OPEN())
+				open();
+			else if(BUT_CLOSE())
+				close();
 		}
 
+		if(cur_state != prev_state)
+		{
+			print_string("KAKKA1: ");
+			utoa(cur_state, buf, 10);
+			print_string(buf);
+			print_char(',');
+			utoa(prev_state, buf, 10);
+			print_string(buf);
+			time = 0;
+			print_string("\n\r");
+		}
+
+		prev_state = cur_state;
 		fsm();
 		if(cur_state != prev_state)
+		{
+			print_string("KAKKA2\n\r");
 			time = 0;
-
-		char buf[10];
+		}
 
 		print_string(" alive_time=");
-		utoa(alive_time++, buf, 10);
+		utoa(alive_time, buf, 10);
 		print_string(buf);
+		if(alive_time > 9) print_char(' ');
+		if(++alive_time >= 100) alive_time = 0;
 
-
-		print_string("state=");
+		print_string(" state=");
 		print_string(states[cur_state].name);
 
 		print_string(" step_time=");
@@ -720,7 +800,7 @@ int main()
 		if(!(PING&4))
 			print_string(" PG2");
 
-/*
+
 		if(SENSOR_ALMOST_CLOSED())
 			print_string(" ALMOST_CLOSED");
 		if(SENSOR_FULLY_CLOSED())
@@ -731,7 +811,14 @@ int main()
 			print_string(" FULLY_OPEN");
 		if(SENSOR_MAN_IN_MIDDLE())
 			print_string(" MAN_IN_MIDDLE");
-*/
+
+		if(BUT_STOP())
+			print_string(" BUT_STOP");
+		if(BUT_OPEN())
+			print_string(" BUT_OPEN");
+		if(BUT_CLOSE())
+			print_string(" BUT_CLOSE");
+
 
 		if(states[cur_state].safety_max_duration && time > states[cur_state].safety_max_duration)
 		{
@@ -749,6 +836,7 @@ int main()
 		print_char('\r');
 
 		while(!sig_100ms) ;  // wait for 100ms to be exceeded
+		time++;
 
 	}
 
