@@ -228,20 +228,21 @@ int8_t cur_state;
 #define S_OPEN_PUSH 5
 #define S_OPENED 6
 
-#define S_CLOSE_START 7
-#define S_CLOSE_RAMPUP 8
-#define S_CLOSE_STEADY 9
-#define S_CLOSE_RAMPDOWN 10
-#define S_CLOSE_PUSH 11
-#define S_CLOSED 12
+#define S_CLOSE_PREBLINK 7
+#define S_CLOSE_START 8
+#define S_CLOSE_RAMPUP 9
+#define S_CLOSE_STEADY 10
+#define S_CLOSE_RAMPDOWN 11
+#define S_CLOSE_PUSH 12
+#define S_CLOSED 13
 
-#define S_STOP_RAMPDOWN 13
-#define S_STOPPED 14
+#define S_STOP_RAMPDOWN 14
+#define S_STOPPED 15
 
-#define S_FAULT_RAMPDOWN 15
-#define S_FAULT_STOPPED 16
+#define S_FAULT_RAMPDOWN 16
+#define S_FAULT_STOPPED 17
 
-#define NUM_STATES 17
+#define NUM_STATES 18
 
 typedef struct
 {
@@ -260,12 +261,13 @@ const state_params_t states[NUM_STATES] =
 	{"OP_DECEL ", 50},
 	{"OP_PUSH  ", 30},
  /*6*/	{"OPENED   ", 5000},
+	{"CL_BLINK ", 100},
 	{"CL_START ", 2},
 	{"CL_ACCEL ", 100},
 	{"CL_STEADY", 300},
 	{"CL_DECEL ", 50},
 	{"CL_PUSH  ", 16},
- /*12*/	{"CLOSED   ", 0},
+ /*13*/	{"CLOSED   ", 0},
 	{"ST_DECEL ", 10},
 	{"STOPPED  ", 10000},
 	{"FA_DECEL ", 5},
@@ -276,17 +278,23 @@ const state_params_t states[NUM_STATES] =
 #define SENSOR_FULLY_OPEN()    (!(PING&(1<<2)))
 #define SENSOR_ALMOST_CLOSED() (!(PINC&(1<<1)))
 #define SENSOR_FULLY_CLOSED()  (!(PINC&(1<<6)))
-#define SENSOR_MAN_IN_MIDDLE() (!(PINA&(1<<5)))
-//#define SENSOR_MAN_OUT_MIDDLE() (!(PINA&(1<<5)))
+#define SENSOR_MAN_IN_MIDDLE() (!(PINA&(1<<4)))
+#define SENSOR_MAN_OUT_MIDDLE() (!(PINA&(1<<5)))
 #define BUT_OPEN()  (!(PINA&(1<<2)))
 #define BUT_CLOSE() (!(PINA&(1<<1)))
 #define BUT_STOP()  ((PINA&(1<<0)))
+#define BUT_OPEN_AND_CLOSE() (!(PINA&(1<<3)))
 
+#define SENSORS_MAN() (SENSOR_MAN_IN_MIDDLE() || SENSOR_MAN_OUT_MIDDLE())
+
+#define BLINK_ON() {sbi(PORTD, 7);}
+#define BLINK_OFF() {cbi(PORTD, 7);}
 
 int8_t errcode;
 
 int8_t open_pending;
 int8_t close_pending;
+int8_t man_middle_pending;
 
 void error(int8_t code)
 {
@@ -320,7 +328,8 @@ void open()
 
 void close()
 {
-	if(	cur_state == S_CLOSE_START ||
+	if(	cur_state == S_CLOSE_PREBLINK ||
+		cur_state == S_CLOSE_START ||
 		cur_state == S_CLOSE_RAMPUP ||
 		cur_state == S_CLOSE_STEADY ||
 		cur_state == S_CLOSE_RAMPDOWN ||
@@ -328,8 +337,11 @@ void close()
 		cur_state == S_CLOSED)
 		return;
 
-	if(SENSOR_MAN_IN_MIDDLE())
-		return;
+	if(SENSORS_MAN())
+	{
+		cur_state = S_STOPPED;
+		man_middle_pending = 1;
+	}
 
 	if(	cur_state == S_OPEN_START ||
 		cur_state == S_OPEN_RAMPUP ||
@@ -342,7 +354,7 @@ void close()
 		return;
 	}
 
-	cur_state = S_CLOSE_START;
+	cur_state = S_CLOSE_PREBLINK;
 }
 
 void stop()
@@ -350,6 +362,13 @@ void stop()
 	if(cur_state == S_STOP_RAMPDOWN || cur_state == S_STOPPED)
 		return;
 	cur_state = S_STOP_RAMPDOWN;
+}
+
+int8_t autoclose_pending;
+void open_and_close()
+{
+	open();
+	autoclose_pending = 1;
 }
 
 void fsm()
@@ -455,13 +474,25 @@ void fsm()
 
 			if(!SENSOR_FULLY_OPEN())
 				error(10);
+
+			if(autoclose_pending && time > 450)
+			{
+				cur_state = S_CLOSE_PREBLINK;
+				autoclose_pending = 0;
+			}
 		}
 
 		break;
 
+		case S_CLOSE_PREBLINK:
+		{
+			if(time > 40)
+				cur_state = S_CLOSE_START;
+		}
+		break;
+
 		case S_CLOSE_START:
 		{
-
 			MOT_2_DISABLE();
 			_delay_ms(20); // Make sure current has decayed before switching the relay
 			pwm_requests[1] = 15;  // INITIAL SPEED
@@ -495,10 +526,13 @@ void fsm()
 				cur_state = S_CLOSE_RAMPDOWN;
 
 			if(SENSOR_FULLY_CLOSED())
-				error(5);
+				cur_state = S_CLOSE_PUSH;
 
-			if(SENSOR_MAN_IN_MIDDLE())
+			if(SENSORS_MAN())
+			{
 				cur_state = S_STOP_RAMPDOWN;
+				man_middle_pending = 1;
+			}
 
 		}
 		break;
@@ -512,8 +546,12 @@ void fsm()
 			if(SENSOR_FULLY_CLOSED())
 				error(6);
 
-			if(SENSOR_MAN_IN_MIDDLE())
+			if(SENSORS_MAN())
+			{
 				cur_state = S_STOP_RAMPDOWN;
+				man_middle_pending = 1;
+			}
+
 		}
 		break;
 
@@ -529,15 +567,19 @@ void fsm()
 			if(SENSOR_FULLY_CLOSED())
 				cur_state = S_CLOSE_PUSH;
 
-			if(SENSOR_MAN_IN_MIDDLE())
+			if(SENSORS_MAN())
+			{
 				cur_state = S_STOP_RAMPDOWN;
+				man_middle_pending = 1;
+			}
+
 
 		}
 		break;
 
 		case S_CLOSE_PUSH:
 		{
-
+			pwm_requests[1] = 50;
 			CUR_LIMIT_PWM_2 = 70;
 
 			if(SENSOR_FULLY_CLOSED())
@@ -553,7 +595,6 @@ void fsm()
 
 			if(!SENSOR_FULLY_CLOSED())
 				error(10);
-
 
 		}
 		break;
@@ -589,6 +630,12 @@ void fsm()
 				cur_state = S_CLOSE_START;
 			}
 
+			if(man_middle_pending && time > 50 && !SENSORS_MAN())
+			{
+				man_middle_pending = 0;
+				cur_state = S_CLOSE_START;
+			}
+
 		}
 		break;
 
@@ -619,6 +666,25 @@ void fsm()
 			error(8);
 		}
 		break;
+	}
+
+	if(cur_state == S_CLOSE_PREBLINK || man_middle_pending ||
+		cur_state == S_CLOSE_START || cur_state == S_CLOSE_RAMPUP ||
+		cur_state == S_CLOSE_STEADY || cur_state == S_CLOSE_RAMPDOWN)
+	{
+		if(time%10 == 1)
+		{
+			BLINK_ON();
+		}
+		else if(time%10 == 6)
+		{
+			BLINK_OFF();
+		}
+//		BLINK_ON();
+	}
+	else
+	{
+		BLINK_OFF();
 	}
 }
 
@@ -743,25 +809,19 @@ int main()
 				open();
 			else if(BUT_CLOSE())
 				close();
+//			else if(BUT_OPEN_AND_CLOSE())
+//				open_and_close();
 		}
 
 		if(cur_state != prev_state)
 		{
-			print_string("KAKKA1: ");
-			utoa(cur_state, buf, 10);
-			print_string(buf);
-			print_char(',');
-			utoa(prev_state, buf, 10);
-			print_string(buf);
 			time = 0;
-			print_string("\n\r");
 		}
 
 		prev_state = cur_state;
 		fsm();
 		if(cur_state != prev_state)
 		{
-			print_string("KAKKA2\n\r");
 			time = 0;
 		}
 
@@ -817,7 +877,7 @@ int main()
 			print_string(" ALMOST_OPEN");
 		if(SENSOR_FULLY_OPEN())
 			print_string(" FULLY_OPEN");
-		if(SENSOR_MAN_IN_MIDDLE())
+		if(SENSORS_MAN())
 			print_string(" MAN_IN_MIDDLE");
 
 		if(BUT_STOP())
@@ -826,6 +886,8 @@ int main()
 			print_string(" BUT_OPEN");
 		if(BUT_CLOSE())
 			print_string(" BUT_CLOSE");
+		if(BUT_OPEN_AND_CLOSE())
+			print_string(" BUT_OPEN_AND_CLOSE");
 
 
 		if(states[cur_state].safety_max_duration && time > states[cur_state].safety_max_duration)
