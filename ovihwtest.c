@@ -278,6 +278,7 @@ const state_params_t states[NUM_STATES] =
 #define SENSOR_FULLY_OPEN() (!(PINC&4))
 #define SENSOR_ALMOST_CLOSED() (!(PINC&4))
 #define SENSOR_FULLY_CLOSED() (!(PINC&4))
+#define SENSOR_HUMAN_IN_MIDDLE() (0)
 
 uint8_t errcode;
 
@@ -455,6 +456,8 @@ void fsm()
 			if(SENSOR_FULLY_CLOSED())
 				error(5);
 
+			if(SENSOR_HUMAN_IN_MIDDLE())
+				cur_state = S_STOP_RAMPDOWN;
 
 		break;
 
@@ -466,6 +469,8 @@ void fsm()
 			if(SENSOR_FULLY_CLOSED())
 				error(6);
 
+			if(SENSOR_HUMAN_IN_MIDDLE())
+				cur_state = S_STOP_RAMPDOWN;
 		break;
 
 		case S_CLOSE_RAMPDOWN:
@@ -478,6 +483,10 @@ void fsm()
 
 			if(SENSOR_FULLY_CLOSED())
 				error(7);
+
+			if(SENSOR_HUMAN_IN_MIDDLE())
+				cur_state = S_STOP_RAMPDOWN;
+
 		break;
 
 		case S_CLOSE_PUSH:
@@ -486,7 +495,6 @@ void fsm()
 
 			if(SENSOR_FULLY_CLOSED())
 				cur_state = S_CLOSED;
-
 
 		break;
 
@@ -575,9 +583,9 @@ int main()
 	TCCR3B = 0b00001001;
 	DDRE |= 1<<3 | 1<<4;
 	CUR_LIMIT_PWM_1 = 10;
-	CUR_LIMIT_PWM_2 = 70;
-	pwm_requests[0] = 0;
-	pwm_requests[1] = 80;
+	CUR_LIMIT_PWM_2 = 10;
+	pwm_requests[0] = 10;
+	pwm_requests[1] = 10;
 
 	/*
 		Timer0 and Timer2 provide 8-bit PWM signals to drive the motor half bridge.
@@ -631,9 +639,6 @@ int main()
 	UCSR1B = 0b10011000;
 	UCSR1C = 0b00001110;
 	UBRR1L = BAUD_SET_115200;
-
-//	_delay_ms(100);
-//	MOT_2_ENABLE();
 
 	DDRB |= 1<<5 /*FETOUT1*/ | 1<<6 /*FETOUT2*/;
 	DDRG |= 1<<3 /*FETOUT3*/ | 1<<4 /*FETOUT4*/ | 1<<0 /*RELAY5*/ | 1<<1 /*RELAY6*/;
