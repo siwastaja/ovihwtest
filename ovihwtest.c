@@ -69,7 +69,7 @@ void print_string(char* str)
 }
 
 
-// Keeps converting motor currents.
+// Do not bloat this ISR
 ISR(ADC_vect)
 {
 	static uint8_t next_input = 0;
@@ -94,6 +94,7 @@ ISR(ADC_vect)
 #define CMD_STOP 3
 volatile int8_t cmd;
 
+// Do not bloat this ISR
 ISR(USART1_RX_vect)
 {
 	char byte = UDR1;
@@ -111,6 +112,13 @@ ISR(USART1_RX_vect)
 	}
 }
 
+/*
+	DO NOT TOUCH THE FOLLOWING THREE ISRs!!! Do not disable interrupts (cli()) for more than a few quick instructions.
+	Also do not create any other ISRs taking more time than a few microseconds!
+	Failure to follow this rule may fry the motor controller and motor.
+
+*/
+
 ISR(INT7_vect) // Motor 1 overcurrent
 {
 	if(!mot_dirs[0])
@@ -121,6 +129,7 @@ ISR(INT7_vect) // Motor 1 overcurrent
 	cbi(EIMSK, 7);
 }
 
+volatile uint8_t ilim_cnt;
 ISR(INT6_vect) // Motor 2 overcurrent
 {
 	if(!mot_dirs[1])
@@ -129,10 +138,11 @@ ISR(INT6_vect) // Motor 2 overcurrent
 		PWM_2 = MAX_PWM;
 	overcurrent_pending[1] = 2;
 	cbi(EIMSK, 6);
+	ilim_cnt++;
 }
 
 volatile int16_t isr_timer;
-volatile int8_t sig_100ms;
+volatile int8_t sig_100ms; // goes 1 every 100ms, can be zeroed from main loop.
 
 ISR(TIMER0_OVF_vect)
 {
@@ -219,6 +229,10 @@ void set_motor_curr_limit(uint8_t limit)
 
 int8_t cur_state;
 
+/*
+	STATES
+*/
+
 #define S_UNKNOWN 0
 
 #define S_OPEN_START 1
@@ -252,7 +266,13 @@ typedef struct
 
 int16_t time;
 
-const state_params_t states[NUM_STATES] =
+/*
+	STATE NAMES AND SAFETY TIMEOUTS (100ms unit)
+	0 = disable safety timeout
+	State name max 9 characters!
+*/
+
+state_params_t states[NUM_STATES] =
 {
  /*0*/	{"UNKNOWN  ", 0},
 	{"OP_START ", 2},
@@ -287,10 +307,27 @@ const state_params_t states[NUM_STATES] =
 
 #define SENSORS_MAN() (SENSOR_MAN_IN_MIDDLE() || SENSOR_MAN_OUT_MIDDLE())
 
-#define BLINK_ON() {sbi(PORTD, 7);}
+#define BLINK_ON() {sbi(PORTD, 7);}    // RELAY 1
 #define BLINK_OFF() {cbi(PORTD, 7);}
+#define ERR_BLINK_ON() {sbi(PORTD, 6);}  // RELAY 2
+#define ERR_BLINK_OFF() {cbi(PORTD, 6);}
+#define RELAY_FULLY_OPEN_ON() {sbi(PORTD, 0);} // RELAY 3
+#define RELAY_FULLY_OPEN_OFF() {cbi(PORTD, 0);}
+
+#define FET1_ON() {sbi(PORTB, 5);}
+#define FET2_ON() {sbi(PORTB, 6);}
+#define FET3_ON() {sbi(PORTG, 3);}
+#define FET4_ON() {sbi(PORTG, 4);}
+#define FET1_OFF() {cbi(PORTB, 5);}
+#define FET2_OFF() {cbi(PORTB, 6);}
+#define FET3_OFF() {cbi(PORTG, 3);}
+#define FET4_OFF() {cbi(PORTG, 4);}
+
+
 
 int8_t errcode;
+int8_t last_errcode;
+int8_t errdetail;
 
 int8_t open_pending;
 int8_t close_pending;
@@ -299,6 +336,8 @@ int8_t man_middle_pending;
 void error(int8_t code)
 {
 	errcode = code;
+	last_errcode = code;
+	errdetail = cur_state;
 	cur_state = S_FAULT_RAMPDOWN;
 }
 
@@ -341,6 +380,7 @@ void close()
 	{
 		cur_state = S_STOPPED;
 		man_middle_pending = 1;
+		return;
 	}
 
 	if(	cur_state == S_OPEN_START ||
@@ -350,6 +390,12 @@ void close()
 		cur_state == S_OPEN_PUSH)
 	{
 		cur_state = S_STOP_RAMPDOWN; // Stop first...
+		close_pending = 1;
+		return;
+	}
+
+	if(cur_state == S_STOP_RAMPDOWN)
+	{
 		close_pending = 1;
 		return;
 	}
@@ -365,6 +411,8 @@ void stop()
 }
 
 int8_t autoclose_pending;
+int8_t quick_autoclose_pending;
+
 void open_and_close()
 {
 	open();
@@ -389,7 +437,7 @@ void fsm()
 			MOT_2_DISABLE();
 			_delay_ms(20); // Make sure current has decayed before switching the relay
 			pwm_requests[1] = 30;  // INITIAL SPEED
-			CUR_LIMIT_PWM_2 = 80;  // CURRENT LIMIT
+			CUR_LIMIT_PWM_2 = 75;  // CURRENT LIMIT
 			MOT_2_DIR_B();
 			_delay_ms(50); // Let the relay switch!
 			MOT_2_ENABLE();
@@ -406,14 +454,14 @@ void fsm()
 			if(pwm_requests[1] > MAX_SPEED)
 				pwm_requests[1] = MAX_SPEED;
 
-			if(time > 20)
+			if(time > 19)
 				cur_state = S_OPEN_STEADY;
 
 			if(SENSOR_ALMOST_OPEN())
 				cur_state = S_OPEN_RAMPDOWN;
 
 			if(SENSOR_FULLY_OPEN())
-				error(1);
+				cur_state = S_OPEN_PUSH;
 
 		}
 		break;
@@ -428,14 +476,18 @@ void fsm()
 			if(time == 120)
 				pwm_requests[1] -= 5;
 
-			if(time == 130)
-				pwm_requests[1] -= 5;
-
 			if(SENSOR_ALMOST_OPEN())
 				cur_state = S_OPEN_RAMPDOWN;
 
 			if(SENSOR_FULLY_OPEN())
 				error(2);
+
+			if(SENSOR_FULLY_CLOSED())
+				error(3);
+
+			if(time>60 && SENSOR_ALMOST_CLOSED())
+				error(4);
+
 
 		}
 		break;
@@ -452,6 +504,9 @@ void fsm()
 			if(SENSOR_FULLY_OPEN())
 				cur_state = S_OPEN_PUSH;
 
+			if(SENSOR_FULLY_CLOSED() || SENSOR_ALMOST_CLOSED())
+				error(5);
+
 		}
 		break;
 
@@ -463,6 +518,8 @@ void fsm()
 			if(SENSOR_FULLY_OPEN())
 				cur_state = S_OPENED;
 
+			if(SENSOR_FULLY_CLOSED() || SENSOR_ALMOST_CLOSED())
+				error(6);
 
 		}
 		break;
@@ -473,19 +530,33 @@ void fsm()
 			MOT_2_DISABLE();
 
 			if(!SENSOR_FULLY_OPEN())
-				error(10);
+				error(7);
 
-			if(autoclose_pending && time > 450)
+			if(autoclose_pending && time > 300)
 			{
 				cur_state = S_CLOSE_PREBLINK;
 				autoclose_pending = 0;
 			}
+
+			if(quick_autoclose_pending && time > 100)
+			{
+				cur_state = S_CLOSE_PREBLINK;
+				quick_autoclose_pending = 0;
+			}
+
+
+			if(SENSOR_FULLY_CLOSED() || SENSOR_ALMOST_CLOSED())
+				error(8);
+
 		}
 
 		break;
 
 		case S_CLOSE_PREBLINK:
 		{
+			autoclose_pending = 0;
+			quick_autoclose_pending = 0;
+			close_pending = 0;
 			if(time > 40)
 				cur_state = S_CLOSE_START;
 		}
@@ -496,7 +567,7 @@ void fsm()
 			MOT_2_DISABLE();
 			_delay_ms(20); // Make sure current has decayed before switching the relay
 			pwm_requests[1] = 15;  // INITIAL SPEED
-			CUR_LIMIT_PWM_2 = 80;  // CURRENT LIMIT
+			CUR_LIMIT_PWM_2 = 75;  // CURRENT LIMIT
 			MOT_2_DIR_A();
 			_delay_ms(50); // Let the relay switch!
 			MOT_2_ENABLE();
@@ -519,7 +590,7 @@ void fsm()
 			if(time > 40 && (SENSOR_FULLY_OPEN() || SENSOR_ALMOST_OPEN()))
 			{
 				// 4 seconds passed, rampup nearly finished, but door still stuck at open or nearly open!
-				error(4);
+				error(9);
 			}
 
 			if(SENSOR_ALMOST_CLOSED())
@@ -544,13 +615,16 @@ void fsm()
 				cur_state = S_CLOSE_RAMPDOWN;
 
 			if(SENSOR_FULLY_CLOSED())
-				error(6);
+				error(10);
 
 			if(SENSORS_MAN())
 			{
 				cur_state = S_STOP_RAMPDOWN;
 				man_middle_pending = 1;
 			}
+
+			if(SENSOR_FULLY_OPEN() || SENSOR_ALMOST_OPEN())
+				error(11);
 
 		}
 		break;
@@ -561,8 +635,8 @@ void fsm()
 			if(pwm_requests[1] > 50)
 				pwm_requests[1] -= 4;
 
-			if(time > 12)
-				cur_state = S_CLOSE_PUSH;
+			//if(time > 12)
+			//	cur_state = S_CLOSE_PUSH;
 
 			if(SENSOR_FULLY_CLOSED())
 				cur_state = S_CLOSE_PUSH;
@@ -573,6 +647,9 @@ void fsm()
 				man_middle_pending = 1;
 			}
 
+			if(SENSOR_FULLY_OPEN() || SENSOR_ALMOST_OPEN())
+				error(12);
+
 
 		}
 		break;
@@ -582,8 +659,11 @@ void fsm()
 			pwm_requests[1] = 50;
 			CUR_LIMIT_PWM_2 = 70;
 
-			if(SENSOR_FULLY_CLOSED())
+			if(SENSOR_FULLY_CLOSED() && time>7)
 				cur_state = S_CLOSED;
+
+			if(SENSOR_FULLY_OPEN() || SENSOR_ALMOST_OPEN())
+				error(13);
 
 		}
 		break;
@@ -594,14 +674,14 @@ void fsm()
 			MOT_2_DISABLE();
 
 			if(!SENSOR_FULLY_CLOSED())
-				error(10);
+				error(14);
 
 		}
 		break;
 
 		case S_STOP_RAMPDOWN:
 		{
-			CUR_LIMIT_PWM_2 = 70;  // LOWER CURRENT LIMIT
+			CUR_LIMIT_PWM_2 = 68;  // LOWER CURRENT LIMIT
 
 			if(pwm_requests[1] > 20)
 				pwm_requests[1] -= 10;
@@ -618,22 +698,23 @@ void fsm()
 		{
 			MOT_2_DISABLE();
 
-			if(open_pending && time > 5)
+			if(open_pending && time > 8)
 			{
 				open_pending = 0;
 				cur_state = S_OPEN_START;
 			}
 
-			if(close_pending && time > 5)
+			if(close_pending && time > 8)
 			{
 				close_pending = 0;
 				cur_state = S_CLOSE_START;
 			}
 
-			if(man_middle_pending && time > 50 && !SENSORS_MAN())
+			if(man_middle_pending && time > 8)
 			{
 				man_middle_pending = 0;
-				cur_state = S_CLOSE_START;
+				cur_state = S_OPEN_START;
+				quick_autoclose_pending = 1;
 			}
 
 		}
@@ -641,13 +722,14 @@ void fsm()
 
 		case S_FAULT_RAMPDOWN:
 		{
+			CUR_LIMIT_PWM_2 = 68;  // LOWER CURRENT LIMIT
 
 			if(pwm_requests[1] > 25)
 				pwm_requests[1] -= 20;
 			else
 				cur_state = S_FAULT_STOPPED;
 
-			if(time > 8)
+			if(time > 5)
 				cur_state = S_FAULT_STOPPED;
 		}
 
@@ -655,15 +737,17 @@ void fsm()
 
 		case S_FAULT_STOPPED:
 		{
-
 			MOT_2_DISABLE();
+
+			if(time > 300)
+				cur_state = S_CLOSE_PREBLINK;
 		}
 
 		break;
 
 		default:
 		{
-			error(8);
+			error(15);
 		}
 		break;
 	}
@@ -672,19 +756,53 @@ void fsm()
 		cur_state == S_CLOSE_START || cur_state == S_CLOSE_RAMPUP ||
 		cur_state == S_CLOSE_STEADY || cur_state == S_CLOSE_RAMPDOWN)
 	{
-		if(time%10 == 1)
+/*		if(time%10 == 1)
 		{
 			BLINK_ON();
 		}
 		else if(time%10 == 6)
 		{
 			BLINK_OFF();
-		}
-//		BLINK_ON();
+		}*/
+		BLINK_ON();
 	}
 	else
 	{
 		BLINK_OFF();
+	}
+
+	if(cur_state == S_FAULT_RAMPDOWN || cur_state == S_FAULT_STOPPED)
+	{
+		if(time%4 == 1)
+		{
+			ERR_BLINK_ON();
+		}
+		else if(time%4 == 3)
+		{
+			ERR_BLINK_OFF();
+		}
+	}
+	else
+	{
+		ERR_BLINK_OFF();
+	}
+
+	if(cur_state == S_CLOSE_PUSH || cur_state == S_CLOSED)
+	{
+		FET1_ON();
+	}
+	else
+	{
+		FET1_OFF();
+	}
+
+	if(cur_state == S_OPENED)
+	{
+		RELAY_FULLY_OPEN_ON();
+	}
+	else
+	{
+		RELAY_FULLY_OPEN_OFF();
 	}
 }
 
@@ -774,6 +892,11 @@ int main()
 
 	int8_t alive_time = 0;
 
+	if(SENSOR_FULLY_CLOSED())
+		cur_state = S_CLOSED;
+	else
+		cur_state = S_CLOSE_PREBLINK;
+
 	while(1)
 	{
 		char buf[10];
@@ -809,8 +932,8 @@ int main()
 				open();
 			else if(BUT_CLOSE())
 				close();
-//			else if(BUT_OPEN_AND_CLOSE())
-//				open_and_close();
+			else if(BUT_OPEN_AND_CLOSE())
+				open_and_close();
 		}
 
 		if(cur_state != prev_state)
@@ -837,6 +960,16 @@ int main()
 		print_string(" step_time=");
 		utoa(time, buf, 10);
 		print_string(buf);
+
+		print_string(" mot_power=");
+		utoa(latest_currents[1], buf, 10);
+		print_string(buf);
+
+		print_string(" limit_lvl=");
+		utoa(ilim_cnt, buf, 10);
+		ilim_cnt = 0;
+		print_string(buf);
+
 
 		if(!(PINA&1))
 			print_string(" PA0");
@@ -899,6 +1032,17 @@ int main()
 		{
 			print_string(" E");
 			utoa(errcode, buf, 10);
+			print_string(buf);
+			errcode = 0;
+		}
+
+		if(last_errcode)
+		{
+			print_string(" e");
+			utoa(last_errcode, buf, 10);
+			print_string(buf);
+			print_string(" err_detail=");
+			utoa(errdetail, buf, 10);
 			print_string(buf);
 		}
 
