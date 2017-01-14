@@ -1,0 +1,99 @@
+
+RS232 uart (115200, no flow control, 8 bits, no parity)
+
+Tuloste:
+
+
+alive_time=numero
+Juoksee 100ms välein välillä 0 .. 99
+
+
+state=TILANIMI
+Tämänhetkinen tila
+Tilat:
+0  UNKNOWN    Tässä ei pitäisi koskaan olla
+1  OP_START   Avauskäsky saatu juuri
+2  OP_ACCEL   Avaa, kiihdyttää vauhtia
+3  OP_STEADY  Avaa
+4  OP_DECEL   Avaa, "lähes auki" -anturi trigannut, jarruttaa
+5  OP_PUSH    Avaa, "Kokonaan auki" -anturi trigannut, työntää virtarajalla pienen töhäyksen
+6  OPENED     Ovi on auki onnistuneesti
+7  CL_BLINK   Sulkeutuu, vilkuttaa valoja ennen varsinaista sulkeutumista
+8  CL_START   Sulkeutumiskäsky saatu
+9  CL_ACCEL   Sulkeutuu, kiihdyttää vauhtia
+10 CL_STEADY  Sulkeutuu
+11 CL_DECEL   Sulkeutuu, "lähes kiinni" -anturi trigannut, jarruttaa
+12 CL_PUSH    Sulkeutuu, "kokonaan kiinni" -anturi trigannut, työntää virtarajalla, magneetti päällä
+13 CLOSED     Ovi on kiinni onnistuneesti
+14 ST_DECEL   STOP-nappia painettu (tai suuntaa haluttu vaihtaa kesken liikkeen), jarrutetaan stoppia varten
+15 STOPPED    Ovi on stopattu
+16 FA_DECEL   Virhe tapahtunut, ovi jarruttaa nopeasti
+17 FAULTED    Virhe tapahtunut, ovi pysäytetty. Sulkemista yritetään 30 sek kuluttua.
+
+
+step_time=numero
+Aika, kauanko tässä tilassa ollaan oltu (yksikkö 100ms)
+
+
+mot_power=numero
+Luku, joka kuvaa inputtivirtaa (eli inputtijännitteen ollessa vakio 48V, inputtitehoa, ja moottorinohjaimen hyötysuhteen ollessa lähes 100%, myös moottoritehoa)
+
+
+limit_lvl=numero
+Montako kertaa moottorin virtaraja on "napsahtanut" viimeisen 100ms aikana. Jos luku käy suureksi verrattuna aiempaan, mekaniikka on jäykistynyt,
+ja ovi liikkuu hitaammin, syy on parasta selvittää.
+
+
+PA0, PA1, PA2, PA3, PA4, PA5, PC1, PC2, PC3, PC4, PC5, PC6, PC7, PG2
+Ohjaimen mainittu input-pinni aktiivinen.
+
+
+ALMOST_CLOSED, FULLY_CLOSED, ALMOST_OPEN, FULLY_OPEN, MAN_IN_MIDDLE, BUT_STOP, BUT_OPEN, BUT_CLOSE, BUT_OPEN_AND_CLOSE
+Mainittu sensori/nappi aktiivinen.
+
+
+Enumero
+
+Virhekoodi, esim. E5. Vilahtaa kerran yhdellä rivillä, juuri kun virhe on tapahtunut.
+
+
+enumero
+
+Viimeisin virhekoodi, esim. e5. Jää näkymään joka tulosteessa (jos raspi ei saanut kiinni E-koodia)
+
+
+err_detail=numero
+
+Lisätieto viimeisimmästä virheestä, auttaa buginmetsästyksessä. Tällä hetkellä tilan numero, jossa virhe on tapahtunut.
+
+
+
+
+VIRHEKOODIT
+2	Ovi on aukeamassa täydellä vauhdilla, ja yhtäkkiä FULLY OPEN -sensori triggaa (ALMOST OPEN jäänyt välistä).
+3	Ovi on aukeamassa täydellä vauhdilla, ja FULLY CLOSED -sensori päällä.
+4	Ovi on auennut täydellä vauhdilla jo 6 sek, ja ALMOST CLOSED -sensori yhä päällä.
+5	Ovi aukeamassa, hidastamassa (OP_DECEL), ja FULLY CLOSED tai ALMOST CLOSED -sensori päällä.
+6	Ovi aukeamassa, työntymässä loppuun (OP_PUSH), ja FULLY CLOSED tai ALMOST CLOSED -sensori päällä.
+7	Ovi on auki-tilassa (OPENED), mutta FULLY OPEN -sensori ei ole päällä vaikka pitäisi.
+8	Ovi on auki-tilassa (OPENED), mutta FULLY CLOSED tai ALMOST CLOSED -sensori on päällä.
+9	Ovi on jo 4 sekuntia kiihdyttänyt sulkeutuakseen (CL_ACCEL), mutta FULLY OPEN tai NEARLY OPEN -sensori yhä päällä.
+10	Ovi sulkeutumassa täydellä vauhdilla, ja yhtäkkiä FULLY CLOSED -sensori triggaa (ALMOST CLOSED jäänyt välistä.)
+11	Ovi sulkeutumassa täydellä vauhdilla, mutta edelleen tulee FULLY OPEN tai NEARLY OPEN.
+12	Ovi sulkeutumassa, hidastamassa jo, mutta silti tulee FULLY OPEN tai NEARLY OPEN.
+13	Ovi sulkeutumassa, työntymässä loppuun asti, mutta silti tulee FULLY OPEN tai NEARLY OPEN.
+14	Ovi on kiinni-tilassa (CLOSED), mutta FULLY CLOSED -sensori ei ole päällä, vaikka pitäisi.
+15	Laiton tila havaittu (koodibugi)
+100	Jokin tila on timeoutannut. err_detail kertoo timeoutanneen tilan numeron.
+
+
+
+
+KOMENNOT
+Sarjaportin kautta annettavat komennot:
+
+o   = avauskäsky
+c   = sulkemiskäsky
+s   = stoppauskäsky
+
+
